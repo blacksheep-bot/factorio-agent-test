@@ -7,7 +7,7 @@
 #   * tool names (move_to, insert_item, ...) cannot be redefined
 #   * every helper prints compact, line-oriented output; nothing here sleeps unboundedly
 
-HELPERS_VERSION = "1.0"
+HELPERS_VERSION = "1.1"
 
 # Entities that burn fuel (have a `.fuel` inventory).
 BURNER_NAMES = ["burner-mining-drill", "stone-furnace", "steel-furnace", "burner-inserter", "boiler"]
@@ -184,9 +184,11 @@ def status_report(show_ok=True, radius=None):
     return problems
 
 
-def refuel_all(min_fuel=5, amount=20, fuel=None):
+def refuel_all(min_fuel=5, amount=20, fuel=None, positions=None):
     """Top up every burner entity whose fuel < min_fuel with `amount` of `fuel`
-    (default: coal, else wood). Walks to each. Returns number refuelled."""
+    (default: coal, else wood). Walks to each. Returns number refuelled.
+    `positions=[(x, y), ...]` limits it to those entities: once coal is belt-fed, list only the
+    hand-fed ones, or the coal goes into self-fed drills and burner inserters first."""
     inv = inv_dict(inspect_inventory())
     if fuel is None:
         fuel = Prototype.Coal if inv.get("coal", 0) > 0 else Prototype.Wood
@@ -194,6 +196,9 @@ def refuel_all(min_fuel=5, amount=20, fuel=None):
     n = 0
     for e in flatten_entities()[0]:
         if e.name not in BURNER_NAMES:
+            continue
+        if positions is not None and not any(abs(e.position.x - px) < 0.6 and abs(e.position.y - py) < 0.6
+                                             for px, py in positions):
             continue
         fc = fuel_count(e) or 0
         if fc >= min_fuel:
@@ -270,13 +275,23 @@ def wait_for(pred, timeout=60, step=5):
     return bool(pred())
 
 
+def game_tick():
+    """Current game tick (60 ticks = 1 game second)."""
+    return int(lua("rcon.print(game.tick)"))
+
+
 def advance(seconds=60):
-    """Let game time pass in sleep(15) chunks (sleep() is capped at 15 s per call)."""
-    left = seconds
-    while left > 0:
-        sleep(min(15, left))
-        left -= 15
-    return True
+    """Let `seconds` GAME seconds pass, measured by tick delta. (FLE's sleep(n) is wall-clock based
+    and only yields ~0.75*n game seconds at speed 10, so a plain sleep loop under-runs.)
+    Returns the game seconds that actually passed."""
+    t0 = game_tick()
+    target = int(seconds * 60)
+    for _ in range(int(seconds) // 4 + 10):
+        left = target - (game_tick() - t0)
+        if left <= 30:
+            break
+        sleep(max(1, min(15, int(left / 60))))
+    return (game_tick() - t0) / 60.0
 
 
 def produced(item=Prototype.IronPlate):
@@ -286,13 +301,50 @@ def produced(item=Prototype.IronPlate):
 
 
 def check_growth(item=Prototype.IronPlate, seconds=30):
-    """Production-stat delta of `item` over `seconds` of game time. Prints a rate per minute."""
+    """Production-stat delta of `item` over `seconds` of game time (tick-measured). Prints a rate/min.
+    The stat can lag a little: use >= 60 s windows, or rate()/am_finished() for assemblers."""
     a = produced(item)
+    t0 = game_tick()
     advance(seconds)
     b = produced(item)
-    rate = (b - a) * 60.0 / seconds
-    print(f"check_growth {item_name(item)}: {a} -> {b} in {seconds}s = {rate:.1f}/min")
+    dt = max(1, game_tick() - t0) / 3600.0
+    print(f"check_growth {item_name(item)}: {a} -> {b} in {dt * 60:.0f}s = {(b - a) / dt:.1f}/min")
     return b - a
+
+
+def am_finished():
+    """{(x, y): (recipe, products_finished)} for every assembling machine, via Lua (exact, no stat lag)."""
+    import json
+    raw = lua("local o={} for _,a in pairs(game.surfaces[1].find_entities_filtered{type='assembling-machine'}) do "
+              "local r=a.get_recipe() o[#o+1]={x=a.position.x,y=a.position.y,r=r and r.name or '',n=a.products_finished} end "
+              "rcon.print(helpers.table_to_json(o))")
+    return {(d["x"], d["y"]): (d["r"], d["n"]) for d in (json.loads(raw) or [])}
+
+
+def rate(items=None, seconds=60):
+    """Measure real production rates per game-minute over `seconds` (tick delta, not the nominal
+    advance time). `items`: list of Prototypes for the force production stat (default: iron/copper
+    plate, gear, circuit, red+green packs). Also prints per-recipe assembler output from
+    products_finished (exact). Returns {item: per_min}."""
+    items = items or [Prototype.IronPlate, Prototype.CopperPlate, Prototype.IronGearWheel,
+                      Prototype.ElectronicCircuit, Prototype.AutomationSciencePack, Prototype.LogisticsSciencePack]
+    a = {item_name(i): produced(i) for i in items}
+    f0 = am_finished()
+    t0 = game_tick()
+    advance(seconds)
+    dt = max(1, game_tick() - t0) / 3600.0
+    b = {k: produced(k) for k in a}
+    f1 = am_finished()
+    out = {k: round((b[k] - a[k]) / dt, 1) for k in a}
+    print(f"rate over {dt * 60:.0f} game-s (stat): " + ", ".join(f"{k}={v}/min" for k, v in out.items()))
+    per = {}
+    for pos, (r, n) in f1.items():
+        if pos in f0 and r:
+            per[r] = per.get(r, 0) + n - f0[pos][1]
+    if per:
+        print("assembler crafts (products_finished; x2 for cable/belt): "
+              + ", ".join(f"{r}={n / dt:.1f}/min" for r, n in sorted(per.items())))
+    return out
 
 
 def ensure_crafted(proto, n=1):
@@ -342,6 +394,122 @@ def place_drill_furnace(ore=None, near=None, fuel=10):
     return drill, furn
 
 
+# ---- Lua-side inspection (fast: get_entities() takes ~15 s wall on a 200+ entity base, and the
+# game runs while it does, ~2 game-min at speed 10; these take well under a second) ----
+
+STATUS_LUA = "local st={} for k,v in pairs(defines.entity_status) do st[v]=k end "
+
+
+def area_lua(x0, y0, x1, y1):
+    return "{{%s,%s},{%s,%s}}" % (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def scan(x0, y0, x1, y1, types=None):
+    """One line per machine in the area: name@x,y:status [+ AM output count, lab packs, fuel].
+    Default types: inserter, assembler, lab, drill, furnace, boiler, generator. Read-only, fast.
+    Works for labs (FLE's get_entity/get_entities on labs fails)."""
+    types = types or ["inserter", "assembling-machine", "lab", "mining-drill", "furnace", "boiler", "generator"]
+    tl = "{" + ",".join(f"'{t}'" for t in types) + "}"
+    out = lua(STATUS_LUA + "local o={} for _,e in pairs(game.surfaces[1].find_entities_filtered{area=" + area_lua(x0, y0, x1, y1)
+              + ",type=" + tl + "}) do local x='' "
+              "if e.type=='assembling-machine' then x=' out='..e.get_output_inventory().get_item_count() end "
+              "if e.type=='lab' then for _,it in pairs(e.get_inventory(defines.inventory.lab_input).get_contents()) do x=x..' '..it.name..'='..it.count end end "
+              "local f=e.get_fuel_inventory() if f then x=x..' fuel='..f.get_item_count() end "
+              "o[#o+1]=e.name..'@'..e.position.x..','..e.position.y..':'..(st[e.status] or tostring(e.status))..x end "
+              "rcon.print(table.concat(o,' | '))")
+    print(out or "(nothing)")
+    return out
+
+
+def lab_report():
+    """Labs (status + packs) and research state, via Lua."""
+    print(lua(STATUS_LUA + "local f=game.forces.player local o={} for _,e in pairs(game.surfaces[1].find_entities_filtered{type='lab'}) do "
+              "local x='' for _,it in pairs(e.get_inventory(defines.inventory.lab_input).get_contents()) do x=x..' '..it.name..'='..it.count end "
+              "o[#o+1]='lab@'..e.position.x..','..e.position.y..':'..(st[e.status] or '?')..x end "
+              "local q={} for _,t in pairs(f.research_queue) do q[#q+1]=t.name end "
+              "rcon.print(table.concat(o,' | ')..' || current='..tostring(f.current_research and f.current_research.name)"
+              "..' progress='..string.format('%.2f',f.research_progress)..' queue='..table.concat(q,','))"))
+
+
+def power_report():
+    """Electric network production/consumption (kW, 1-min average) vs steam-engine capacity, plus boilers."""
+    print(lua("local s=game.surfaces[1] local p=s.find_entities_filtered{type='electric-pole',limit=1}[1] "
+              "if not p then rcon.print('no poles') return end local st=p.electric_network_statistics "
+              "local function tot(cat,tbl) local t=0 for n,_ in pairs(tbl) do t=t+st.get_flow_count{name=n,category=cat,"
+              "precision_index=defines.flow_precision_index.one_minute}*60/1000 end return t end "
+              "local cap=900*#s.find_entities_filtered{name='steam-engine'} local b={} "
+              "for _,x in pairs(s.find_entities_filtered{type='boiler'}) do b[#b+1]=x.position.x..','..x.position.y..' fuel='..x.get_fuel_inventory().get_item_count() end "
+              "rcon.print(string.format('produced=%.0fkW consumed=%.0fkW capacity=%dkW (one network sampled) | boilers: ',"
+              "tot('output',st.output_counts),tot('input',st.input_counts),cap)..table.concat(b,'; '))"))
+
+
+def belt_items(x0, y0, x1, y1):
+    """(belts, items on them) in an area: is a supply belt backed up (~7-8 items/belt) or starved?"""
+    r = lua("local t=0 local n=0 for _,e in pairs(game.surfaces[1].find_entities_filtered{type='transport-belt',area="
+            + area_lua(x0, y0, x1, y1) + "}) do n=n+1 t=t+e.get_transport_line(1).get_item_count()+e.get_transport_line(2).get_item_count() end "
+            "rcon.print(n..' '..t)")
+    n, t = (int(v) for v in r.split())
+    print(f"belt_items: {n} belts, {t} items ({t / max(n, 1):.1f}/belt)")
+    return n, t
+
+
+def ascii_map(x0, x1, y0, y1):
+    """Text map, one char per tile: D drill F furnace A assembler > inserter = belt ~ pipe + pole
+    o chest # other building, t tree r rock, lowercase letter = ore (i/c/s/...), . empty.
+    Read-only. Keep it <= ~60x50 tiles per call."""
+    code = ("local s=game.surfaces[1] local o={} for y=%d,%d do local row={} for x=%d,%d do "
+            "local a={{x+0.1,y+0.1},{x+0.9,y+0.9}} local c='.' "
+            "local r=s.find_entities_filtered{area=a,type='resource',limit=1} if #r>0 then c=string.sub(r[1].name,1,1) end "
+            "local e=s.find_entities_filtered{area=a,type={'resource'},invert=true,limit=1} if #e>0 then local t=e[1].type "
+            "if t=='tree' then c='t' elseif t=='simple-entity' then c='r' elseif t=='transport-belt' or t=='underground-belt' then c='=' "
+            "elseif t=='electric-pole' then c='+' elseif t=='pipe' then c='~' elseif t=='inserter' then c='>' elseif t=='container' then c='o' "
+            "elseif t=='furnace' then c='F' elseif t=='mining-drill' then c='D' elseif t=='assembling-machine' then c='A' else c='#' end end "
+            "row[#row+1]=c end o[#o+1]=string.format('%%4d ',y)..table.concat(row,'') end rcon.print(table.concat(o,'\\n'))") % (y0, y1, x0, x1)
+    print(f"ascii_map x {x0}..{x1}")
+    for line in lua(code).split("\n"):
+        print(line)
+
+
+def limit_chest(x, y, slots=1):
+    """Limit a chest (the inventory bar) to `slots` slots, so a relay chest between machines buffers a
+    little instead of swallowing every intermediate. Returns the new bar."""
+    return lua("local c=game.surfaces[1].find_entities_filtered{type='container',position={%s,%s},limit=1}[1] "
+               "if not c then rcon.print('no chest') return end local i=c.get_inventory(defines.inventory.chest) "
+               "i.set_bar(%d) rcon.print(i.get_bar())" % (x, y, slots + 1))
+
+
+def ug_output(x, y, direction="east"):
+    """FLE's place_entity(UndergroundBelt) always makes an INPUT. Place both ends with FLE, then call
+    this on the EXIT end: it destroys it and re-creates it as an output facing `direction`
+    ('north'/'east'/'south'/'west' = the belt's travel direction). Prints type, direction, neighbour."""
+    return lua("local s=game.surfaces[1] local e=s.find_entity('underground-belt',{%s,%s}) if e then e.destroy() end "
+               "local n=s.create_entity{name='underground-belt',position={%s,%s},direction=defines.direction.%s,force='player',type='output'} "
+               "local a=n.neighbours rcon.print(n.belt_to_ground_type..' d'..n.direction..' nb='..tostring(a and (a.position.x..','..a.position.y)))"
+               % (x, y, x, y, direction))
+
+
+def belt_line(x0, y0, x1, y1, direction):
+    """Lay a straight belt from (x0,y0) to (x1,y1) inclusive (same x or same y), every tile facing
+    `direction`, walking along as needed. Exact routing, unlike connect_entities. Returns tiles placed."""
+    pts = []
+    if x0 == x1:
+        st = 1 if y1 >= y0 else -1
+        pts = [(x0, y0 + st * i) for i in range(int(abs(y1 - y0)) + 1)]
+    else:
+        assert y0 == y1, "belt_line: segment must be horizontal or vertical"
+        st = 1 if x1 >= x0 else -1
+        pts = [(x0 + st * i, y0) for i in range(int(abs(x1 - x0)) + 1)]
+    n = 0
+    for (x, y) in pts:
+        pp = player_pos()
+        if abs(pp.x - x) > 6 or abs(pp.y - y) > 6:
+            move_to(Position(x=x + 1, y=y + 1))
+        place_entity(Prototype.TransportBelt, direction=direction, position=Position(x=x, y=y))
+        n += 1
+    print(f"belt_line ({x0:g},{y0:g})->({x1:g},{y1:g}): {n} belts")
+    return n
+
+
 def make_peaceful():
     """Idempotent: peaceful mode on, expansion off, remove worms/spawners (open_world has
     worms ~170 tiles from spawn). Runs automatically when this file is loaded."""
@@ -368,9 +536,12 @@ def journal_snapshot():
 
 
 def helpers_help():
-    print("helpers: status_report(show_ok=True, radius=None) refuel_all(min_fuel=5, amount=20, fuel=None) "
+    print("helpers: status_report(show_ok=True, radius=None) refuel_all(min_fuel=5, amount=20, fuel=None, positions=None) "
           "find_space(w,h,near,proto=None,pad=2) gather(resource,qty) collect(item=None,min_count=1) "
-          "wait_for(pred,timeout=60,step=5) advance(seconds=60) produced(item) check_growth(item,seconds=30) "
+          "wait_for(pred,timeout=60,step=5) advance(seconds=60) game_tick() produced(item) check_growth(item,seconds=30) "
+          "rate(items=None,seconds=60) am_finished() scan(x0,y0,x1,y1,types=None) lab_report() power_report() "
+          "belt_items(x0,y0,x1,y1) ascii_map(x0,x1,y0,y1) limit_chest(x,y,slots=1) ug_output(x,y,direction) "
+          "belt_line(x0,y0,x1,y1,direction) "
           "ensure_crafted(proto,n) place_new(proto,pos,direction=None) place_drill_furnace(ore=None,near=None,fuel=10) research_state() "
           "journal_snapshot() player_pos() make_peaceful() lua(code) inv_dict(inv) has_field(e,attr)")
 

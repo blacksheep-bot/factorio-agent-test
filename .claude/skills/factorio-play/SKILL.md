@@ -14,9 +14,9 @@ python3 setup/fle_exec.py /tmp/<scratch>/step.py     # anything longer than ~3 l
 ```
 
 Variables and functions persist between calls. The game is **turn-based**: it is paused
-between your calls and only advances while a program runs (`sleep(≤15)`, `advance(seconds)`).
-Thinking costs no game time, so nothing runs out of fuel while you plan. But nothing is
-produced either unless you wait.
+between your calls and only advances while a program runs (`advance(seconds)`, `sleep(≤15)`,
+and any slow tool call). Thinking costs no game time, so nothing runs out of fuel while you
+plan. But nothing is produced either unless you wait.
 
 References (read them when needed, not all up front):
 - `references/api.md`: tested tool signatures and traps. **Read it before your first program.**
@@ -24,13 +24,16 @@ References (read them when needed, not all up front):
 - `references/recipes.md`: known-good snippets: drill→furnace, coal pair, refuel, steam power,
   gear assembler, lab.
 - `agent/helpers.py`: preloaded helpers (`status_report`, `refuel_all`, `find_space`, `gather`,
-  `collect`, `place_new`, `place_drill_furnace`, `advance`, `check_growth`, `produced`, `journal_snapshot`, ...).
+  `collect`, `place_new`, `place_drill_furnace`, `advance`, `rate`, `check_growth`, `scan`,
+  `lab_report`, `power_report`, `ascii_map`, `belt_line`, `ug_output`, `limit_chest`,
+  `journal_snapshot`, ...). `helpers_help()` lists signatures.
 
 ## The loop (one iteration = one program)
 
-1. **Orient.** At the start of a shift, and whenever you are unsure, run `status_report()`.
-   It prints the inventory, every entity with status/fuel/contents, the problems list, the
-   research state, trigger counters, and unlocked/locked recipes. Read the PROBLEMS line first.
+1. **Orient.** At the start of a shift run `status_report(show_ok=False)`. It prints the
+   inventory, every entity with status/fuel/contents, the problems list, the research state,
+   trigger counters, and unlocked/locked recipes. Read the PROBLEMS line first. It is slow on a
+   big base (≈ 2 game-min), so mid-shift use `scan(x0,y0,x1,y1)` on the area you are working on.
 2. **Pick the next milestone** from strategy.md (or the one the orchestrator gave you). Write
    down its code check.
 3. **Write one small program** (≤ ~30 lines, one purpose):
@@ -46,7 +49,7 @@ References (read them when needed, not all up front):
    before it already happened**. Do not re-run the earlier lines. Inspect what exists, then
    continue from the failure point.
 5. **Verify with inspection, not belief.** `advance(30-60)`, then re-fetch and check `status`
-   and output counts (`check_growth(Prototype.IronPlate, 60)` or chest/furnace contents).
+   and output counts (`scan(...)`, `rate([...], 60)`, chest/furnace contents).
    An entity existing is not proof that the chain works.
 6. **Journal.** After each milestone or important discovery, append 1–3 lines to
    `runs/<run>/JOURNAL.md` (see the shift protocol below). Store key positions in a
@@ -58,7 +61,9 @@ References (read them when needed, not all up front):
 2. **Never trust a returned object after waiting or after a placement next to a same-type
    entity.** Re-fetch it.
 3. **Fuel is the clock.** Give 20 coal to every burner thing. Run `refuel_all()` at the start
-   of every shift and before every long `advance`. Automate coal by M3.
+   of every shift and before every long `advance`. Automate coal by M3 (belt-fed, recipes
+   g/h). After that, keep a list of the hand-fed entities in the journal and refuel only
+   those (`refuel_all(positions=[...])`); a plain `refuel_all()` wastes coal on self-fed ones.
 4. **Automate, don't shuttle.** Hand-mining is only for the bootstrap. Every program after M1
    should add, extend or fix an automated chain. Hand-filled chests do not count for
    milestones.
@@ -72,6 +77,14 @@ References (read them when needed, not all up front):
    Automation = 10 red packs in a powered lab.
 8. **No unbounded loops.** Use `for _ in range(N)` and `advance()`. A hung snippet blocks the
    REPL.
+9. **Measure rates by tick delta.** `sleep(n)` only runs about 0.75·n game seconds. Use
+   `rate()`/`check_growth()` (or `game_tick()` before and after), windows ≥ 60 s, and
+   `am_finished()` for assemblers, because the production stat can lag.
+10. **One assignment per line, print coordinates before placing.** A tuple assignment once
+    produced x≈700 and poles were built 700 tiles away.
+11. **No single points of failure on power.** Feed a boiler from the coal belt with an
+    electric inserter *and* a burner inserter. Limit every relay chest between machines to
+    one slot (`limit_chest`), or it swallows the intermediates and starves the line.
 
 ## Failure modes → mitigations
 | Symptom | Fix |
@@ -88,6 +101,18 @@ References (read them when needed, not all up front):
 | `NameError` for a helper | Helpers are gone (REPL restarted or `reset()` called): `python3 setup/fle_exec.py agent/helpers.py`. |
 | Every call fails / connection refused | `python3 setup/fle_exec.py --status`. Then `--reinit`, or restart the REPL (CLAUDE.md). **Never** with `--fresh` mid-run. |
 | Warning "output blocked by item on the ground" while status is WORKING | False positive. Trust status and counts. |
+| Rate is about 25% below the expected number | You divided by the nominal sleep time. Use `rate()` (tick delta). |
+| Rate jumps between checks (+2/min, then +98/min) | Production-stat lag. Use a ≥ 60 s window; confirm with chests or `am_finished()`. |
+| `get_entity(Prototype.Lab, …)` raises `'list' object has no attribute 'items'` | FLE bug. Read labs with `lab_report()` / `scan()`. |
+| Placing a lab raises `"[-2]"` | It may already be placed. `scan()` the spot before retrying. |
+| Underground belt carries nothing; both ends are inputs | FLE always places inputs. `ug_output(x, y, 'east')` on the exit end. |
+| Engines stop, consumers NO_POWER after adding a pipe or engine | The water line touched an engine and flooded the steam side. Remove it, clear with Lua `e.fluidbox[1]=nil`. See api.md "Fluids". |
+| Boiler fuel falls toward 0 | A lone burner inserter starved. Add an electric inserter from the coal belt next to it. |
+| Downstream AM `item_ingredient_shortage` while an upstream chest fills | Unbounded relay chest. `limit_chest(x, y, 1)`. |
+| Entities built far from where you meant (x≈700) | A multi-assignment gave wrong values. Assign one per line, print, then place. |
+| `set_research` has no enum for a tech | `lua("game.forces.player.add_research('name')")`. |
+| Placement blocked by a dead tree trunk or rock | `move_to` next to it, `harvest_resource` at its exact position. |
+| A call took 15 s and fuel dropped | `get_entities()`/`status_report()` ran the game while slow. Use `scan()` mid-shift. |
 
 ## Shift protocol (when run by the orchestrator)
 You get: the run directory `runs/<run>/`, a milestone goal, and a budget of N executions.
@@ -100,7 +125,7 @@ You get: the run directory `runs/<run>/`, a milestone goal, and a budget of N ex
    render and save:
    ```bash
    python3 setup/fle_exec.py --render runs/<run>/renders/shift-NN.png --x <base cx> --y <base cy> --radius 30
-   python3 setup/fle_exec.py --save <run>-shift-NN     # -> .fle/saves/<run>-shift-NN.zip
+   python3 setup/fle_exec.py --save <run>-shift-NN --copy-to runs/<run>/saves/<run>-shift-NN.zip
    ```
    Render each separate area (smelting, power, ...) if they are more than about 50 tiles
    apart. Look at the PNG (Read it) to sanity-check the layout.
@@ -115,7 +140,7 @@ You get: the run directory `runs/<run>/`, a milestone goal, and a budget of N ex
    - Research: researched=[...], current=..., triggers iron …/50 copper …/10
    - Lessons / traps hit this shift: ...
    - NEXT: the single most useful next step, with positions.
-   - Render: renders/shift-NN.png · Save: .fle/saves/<run>-shift-NN.zip
+   - Render: renders/shift-NN.png · Save: saves/<run>-shift-NN.zip
    ```
    Also add one line to the run's timeline table at the top of JOURNAL.md, and the render to
    `runs/<run>/README.md` if it exists.

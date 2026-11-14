@@ -13,6 +13,7 @@ python3 setup/fle_exec.py /path/snippet.py                   # file (best for >5
 python3 setup/fle_exec.py agent/helpers.py                   # (re)load the helpers
 python3 setup/fle_exec.py --render runs/<run>/renders/x.png --x X --y Y --radius 20
 python3 setup/fle_exec.py --save <name>                      # -> .fle/saves/<name>.zip
+python3 setup/fle_exec.py --save <name> --copy-to runs/<run>/saves/<name>.zip   # + a committed copy
 python3 setup/fle_exec.py --status                            # REPL alive? tick, player position
 ```
 
@@ -26,9 +27,18 @@ python3 setup/fle_exec.py --status                            # REPL alive? tick
   variables and the helpers.
 - `import json, math, time` works inside snippets.
 - `instance` is the live `FactorioInstance`. Raw Lua: `lua("rcon.print(game.tick)")` (helper).
-- **Turn-based clock:** the game is paused between executions and runs only while a
-  program runs. `sleep(n)` (max 15 per call) and `advance(seconds)` are how the factory
-  produces. At game speed 10, `advance(60)` takes about 6 s of wall time.
+- **Turn-based clock:** the game is paused between executions and runs (at speed 10) only
+  while a program runs, **including while slow tools run**. `sleep(n)` (max 15) is wall-clock
+  based and yields only about **0.75·n game seconds**. The `advance(seconds)` helper loops on
+  the tick counter, so it really runs `seconds` game seconds (and returns the amount). Measure
+  rates with `rate()` / `check_growth()` (tick deltas), never as count/N after a sleep.
+- **`get_entities()` is slow on a real base**: about 15 s wall (≈ 2 game-min of factory time)
+  with 240 entities, even with a prototype filter; `status_report()` pays this too. Mid-shift,
+  check status with the Lua helpers `scan(x0,y0,x1,y1)`, `lab_report()`, `power_report()`,
+  `belt_items()` and `ascii_map()` (each under 0.1 s).
+- **One assignment per line.** `x0,y0,x1,y1 = 5.5,-52.5,50.5,-88.5` once left x0=702 and
+  x1=801, and 9 poles went about 700 tiles away. Assign separately and print the values
+  before you place anything with them.
 - Timeouts: the default is 120 s per call (`--timeout N`). A timed-out snippet keeps running in
   a thread, so never write unbounded loops.
 
@@ -40,7 +50,7 @@ python3 setup/fle_exec.py --status                            # REPL alive? tick
 | `nearest(Resource.X \| Prototype.X) -> Position` | Resources: `IronOre, CopperOre, Coal, Stone, Water, Wood, CrudeOil`. Searches about 500 tiles and raises if nothing is found. `Resource.X` is a tuple, so `Resource.Coal[0] == 'coal'`. |
 | `get_resource_patch(Resource.X, pos) -> ResourcePatch` | `.size` (total amount), `.bounding_box.left_top/right_bottom`. |
 | `move_to(pos) -> Position` | Near-instant (`fast=True`). **Required before** harvest, place, insert or extract (reach is about 10 tiles). |
-| `harvest_resource(pos, quantity=1, radius=10) -> int` | Takes about 2.5 s wall per call regardless of quantity. Trees: `nearest(Resource.Wood)`; one call for 5 gave 8 wood. Returns the amount actually mined. |
+| `harvest_resource(pos, quantity=1, radius=10) -> int` | Takes about 2.5 s wall per call regardless of quantity. Trees: `nearest(Resource.Wood)`; one call for 5 gave 8 wood. Returns the amount actually mined. Dead tree trunks and big rocks block placements: `move_to` next to one, then harvest at its exact position (find it with `ascii_map` or Lua `find_entities_filtered{type={'tree','simple-entity'}}`). |
 | `craft_item(Prototype.X, quantity=1) -> int` | Crafts intermediates recursively from what you hold (plates→gears→drill). Instant. A locked recipe raises `"...recipe for pipe is not unlocked yet (requires steam-power technology)"`. |
 | `get_prototype_recipe(Prototype.X) -> Recipe` | `.ingredients` are correct. **`.enabled` is unreliable** (it said False for burner-mining-drill, which was craftable). Use `research_state()['enabled']` instead. |
 | `place_entity(proto, direction=Direction.UP, position=pos) -> Entity` | Snaps to the grid (for example, a drill at left_top (0.5,-63.5) lands at (1,-63)). **The returned object can be stale or even a different neighbouring entity of the same type.** Re-fetching with `get_entity(proto, returned.position)` can then fetch the *neighbour* too, so use the helper **`place_new(proto, pos, direction)`**, which diffs entities before and after and returns the one actually created. |
@@ -51,12 +61,14 @@ python3 setup/fle_exec.py --status                            # REPL alive? tick
 | `insert_item(Prototype.Item, target_entity, quantity=5) -> Entity` | Returns the **updated** entity, so reassign it. Must be in reach. |
 | `extract_item(Prototype.Item, entity_or_pos, quantity=5) -> int` | Works on furnace results, chests, assembler output and drill fuel slots. |
 | `pickup_entity(entity \| group) -> bool` | Returns items to the inventory. A whole `BeltGroup` works. |
-| `get_entity(proto, pos) -> Entity` | Fresh state. Use it after every wait. |
-| `get_entities(set_of_protos=set(), position=None, radius=1000) -> list` | Belts, pipes and poles come back as **groups** (`BeltGroup.belts`, `PipeGroup.pipes`, `ElectricityGroup.poles`). |
-| `connect_entities(src, dst, Prototype.Pipe \| TransportBelt \| SmallElectricPole)` | Routes around obstacles. Accepts entities or Positions. Returns a group. **Poles: it stops as soon as the target is powered.** It will not add a pole for a second consumer that is already "on the network" by the group's logic but outside the 5×5 supply area. Place one with `place_entity_next_to(SmallElectricPole, consumer.position, RIGHT)`. |
+| `get_entity(proto, pos) -> Entity` | Fresh state. Use it after every wait. **Labs are broken**: `get_entity(Prototype.Lab, …)` raises `'list' object has no attribute 'items'` and `get_entities({Prototype.Lab})` returns `[]`. Use `lab_report()` / `scan()`. |
+| `get_entities(set_of_protos=set(), position=None, radius=1000) -> list` | Belts, pipes and poles come back as **groups** (`BeltGroup.belts`, `PipeGroup.pipes`, `ElectricityGroup.poles`). Slow (see above). |
+| `connect_entities(src, dst, Prototype.Pipe \| TransportBelt \| SmallElectricPole)` | Routes around obstacles. Accepts entities or Positions. Returns a group. **Poles: it stops as soon as the target is powered.** It will not add a pole for a second consumer that is already "on the network" by the group's logic but outside the 5×5 supply area. Place one with `place_entity_next_to(SmallElectricPole, consumer.position, RIGHT)`. Wasteful over distance (it wanted 20 poles for 58 tiles; hand-placing every ~6.4 tiles used 9). For belts with exact routing use `belt_line()`. |
+| `place_entity(Prototype.UndergroundBelt, …)` | **Always creates an INPUT end.** Rotating flips it, setting `.direction` resets it. Place both ends with FLE, then `ug_output(x, y, 'east')` on the exit end (Lua destroy + `create_entity{type='output'}`, as FLE's own connect_entities does). |
+| `place_entity(Prototype.Lab, …)` / `place_new(Lab)` | Can raise `"[-2]"` **after** the lab was placed. Check with `scan()` or `can_place_entity` before retrying. |
 | `get_connection_amount(a, b, proto) -> int` | Works for poles (3 for 10 tiles). **Broken for TransportBelt** (`TypeError: 'BeltGroup' object is not subscriptable`). |
 | `set_entity_recipe(assembler, Prototype.IronGearWheel) -> Entity` | Works on AM1 without Automation research for already-enabled recipes (gears). |
-| `set_research(Technology.Automation) -> [Ingredient]` | Returns the packs needed. The lab must hold packs and have power. |
+| `set_research(Technology.Automation) -> [Ingredient]` | Returns the packs needed. The lab must hold packs and have power. Some techs have no enum (electric-mining-drill): use `lua("game.forces.player.add_research('electric-mining-drill')")`, which also queues. |
 | `get_research_progress(Technology.X) -> [Ingredient]` | `[]` means done. |
 | `sleep(seconds)` | Capped at 15 game-seconds per call. Use `advance(n)` for longer waits. |
 | `score() -> (score, automated)` | Also returned per exec as `score=`. |
@@ -67,12 +79,18 @@ python3 setup/fle_exec.py --status                            # REPL alive? tick
 - Furnace: `.furnace_source`, `.furnace_result`. Assembler: `.recipe`, `.assembling_machine_input/_output`.
 - Chest: `.inventory`. Lab: `.lab_input`. Drill: `.drop_position`, `.resources`.
 - Inserter: `.pickup_position`, `.drop_position`. Fluid entities: `.connection_points`; boiler `.steam_output_point`.
+- An electric drill facing UP drops 2 tiles above its centre. Place the furnace explicitly at
+  `(x+0.5, y-2.5)`; a furnace placed at `drop_position` overlapped the drill.
+- Assembler `products_finished` (Lua) counts crafts exactly; `am_finished()` reads them all.
 - **`getattr(entity, 'anything')` returns something for ANY name** (dynamic fallback). Test
   fields with `has_field(e, 'fuel')` (helper) or `'fuel' in e.__dict__`, never `hasattr`.
 - `status.value` strings: `working, no_fuel, no_power, no_ingredients, waiting_for_space_in_destination,
   full_output, item_ingredient_shortage, not_plugged_in_electric_network, waiting_for_source_items, ...`
 
 ## Misleading signals
+- The production stat (`produced()`, `check_growth()`) can lag: copper once read +2/min and
+  +98/min on the next check. Use windows of ≥ 60 s, and confirm with chest counts or
+  `am_finished()` before concluding that a line is dead.
 - A burner drill dropping into a furnace shows the warning `"output blocked by item on the ground..."`
   while `status == WORKING`. **Trust `status` and the output counts, not `warnings`.**
 - A steam engine with no consumer shows `NOT_PLUGGED_IN_ELECTRIC_NETWORK`. That is normal.
@@ -100,10 +118,33 @@ pre-researches the `automation-science-pack` tech; firearm-magazine is also on).
 `status_report(show_ok=True, radius=None)`, `refuel_all(min_fuel=5, amount=20, fuel=None)`,
 `find_space(w, h, near, proto=None, pad=2) -> inner left_top Position`, `gather(Resource.X, qty)`,
 `collect(item=None, min_count=1)`, `place_drill_furnace(ore=Resource.IronOre, near=None, fuel=10)`,
-`place_new(proto, pos, direction=None)`, `advance(seconds)`, `wait_for(pred, timeout=60, step=5)`, `produced(Prototype.X)` (all-time
-production stat), `check_growth(Prototype.X, seconds=30)`, `ensure_crafted(proto, n)`,
-`research_state()`, `journal_snapshot()`, `player_pos()`, `lua(code)`, `inv_dict(inv)`,
-`has_field(e, attr)`, `make_peaceful()`, `helpers_help()`.
+`place_new(proto, pos, direction=None)`, `advance(seconds)` (tick-accurate),
+`wait_for(pred, timeout=60, step=5)`, `produced(Prototype.X)` (all-time production stat),
+`check_growth(Prototype.X, seconds=30)`, `rate(items=None, seconds=60)` (per-min rates from
+tick deltas, plus per-recipe assembler crafts), `am_finished()`, `game_tick()`,
+`ensure_crafted(proto, n)`, `research_state()`, `journal_snapshot()`, `player_pos()`,
+`lua(code)`, `inv_dict(inv)`, `has_field(e, attr)`, `make_peaceful()`, `helpers_help()`.
+Fast, read-only, Lua-side: `scan(x0,y0,x1,y1)`, `lab_report()`, `power_report()`,
+`belt_items(x0,y0,x1,y1)`, `ascii_map(x0,x1,y0,y1)`. Builders: `belt_line(x0,y0,x1,y1,dir)`,
+`ug_output(x,y,dir)`, `limit_chest(x,y,slots=1)`. `refuel_all(..., positions=[(x,y),...])`
+refuels only the listed entities.
+
+## Fluids
+- A water pipe touching a second fluid connection (for example a second steam engine's far
+  end) floods the steam side with water: engines stop and consumers go NO_POWER. Fix: pick up
+  the touching engine, then clear the fluid in Lua (`e.fluidbox[1] = nil` on each flooded
+  entity; `flush()` did not help). Keep 1 empty tile beside a water line. A second boiler
+  chains off the first boiler's other water port (pipe between them).
+- `power_report()` shows produced/consumed kW against engine capacity, plus boiler fuel.
+
+## Lua escape hatch (all used in run-01)
+`lua(code)` runs `/sc code` and returns what it `rcon.print`s. There is **no
+`game.players[1]`** in FLE (the character is `storage.agent_characters[1]`); pass
+`force='player'`.
+- Queue research: `game.forces.player.add_research('logistics-2')`.
+- Find entities: `game.surfaces[1].find_entities_filtered{area={{x0,y0},{x1,y1}}, type='lab'}`.
+- Status names: `defines.entity_status` maps names to numbers; invert it to print names.
+- Chest limit: `limit_chest(x, y, slots=1)` (`get_inventory(defines.inventory.chest).set_bar(slots+1)`).
 
 ## Crafting traps
 - `craft_item(Prototype.BurnerMiningDrill)` **consumes a stone furnace from your inventory**
