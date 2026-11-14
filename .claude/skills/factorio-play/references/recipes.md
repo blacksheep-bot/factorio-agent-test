@@ -182,3 +182,133 @@ set_research -> 10 packs; lab WORKING, remaining 9 after 15 s; after advance(100
 - **Coal pair caveat:** the two drills only fill each other's fuel slots (max 50) and then
   stall with `waiting_for_space_in_destination`. Harvest coal with
   `extract_item(Prototype.Coal, c1, 30)`. For a real coal supply, add drill → chest pairs.
+
+---
+
+# Patterns proven in run-01 (open_world, 3 shifts, red + green science)
+
+Positions are run-01's (see `runs/run-01/JOURNAL.md` "Known positions"); shift positions to
+your map. Directions in Lua output are 16-way: north 0, east 4, south 8, west 12. Code blocks
+are the shift's own programs. Where a local `lay()/seg()` or `ug_out()` was used, it is shown
+as the helper that now wraps the same code (`belt_line`, `ug_output`).
+
+## (g) Self-refuelling coal belt  [M3, replaces hand refuelling]
+Layout (shift 01, code not preserved; read back live with Lua):
+- A row of burner drills on coal, 2 tiles apart, at (cx, -95), all facing **DOWN**. Each drops
+  at (cx+0.5, -93.7) onto a 1-tile belt at (cx+0.5, -93.5) pointing DOWN.
+- That joins a belt running **WEST** along y = -92.5 (the trunk to the smelters).
+- A **burner inserter** at (cx-0.5, -93.5) facing DOWN picks coal from the trunk at
+  (cx-0.5, -92.5) and drops into the drill above it, so each drill refuels from its own output.
+  Burner inserters also refuel themselves from the coal they carry.
+- 7 drills saturated the belt; it fed ~20 furnaces, 2 boilers and the burner inserters for
+  2 shifts. Smelters take fuel with an inserter from a trunk that passes next to them.
+Check: `belt_items(...)` on the trunk shows several items per belt, and `scan()` on the drills
+shows `working` with fuel > 0 after a long `advance`.
+
+## (h) Boiler at the base, water piped in; redundant fuel; second boiler  [M4/M8]
+Layout (shift 02): offshore pump (-12.5,34.5) → **172-pipe water line** north along x=0.5 →
+boiler (2.5,-60) at the smelting block, so the coal trunk (extended 6 tiles) can feed it and
+no long pole line is needed. Keep every other entity one tile away from the water pipe; a
+second engine touching it flooded the steam side (api.md "Fluids").
+Redundant feed (shift 03): an electric inserter next to the original burner inserter, both
+taking from the coal belt:
+```python
+craft_item(Prototype.Inserter, 6)
+move_to(Position(x=2.5, y=-64.5))
+pole = place_new(Prototype.SmallElectricPole, Position(x=3.5, y=-61.5))
+ins = place_new(Prototype.Inserter, Position(x=1.5, y=-61.5), Direction.DOWN)   # belt y=-62.5 -> boiler
+print("ins", ins.position, ins.direction, ins.pickup_position, ins.drop_position, ins.status)
+```
+Second boiler chained on the first boiler's water port, its own engine, fuel via a 1-slot chest:
+```python
+craft_item(Prototype.Boiler, 1); craft_item(Prototype.SteamEngine, 1); craft_item(Prototype.Pipe, 4)
+move_to(Position(x=6.5, y=-64.5))
+b2 = place_new(Prototype.Boiler, Position(x=6.5, y=-61), Direction.UP)
+print("boiler2", b2.position, b2.direction, b2.connection_points, b2.steam_output_point)
+move_to(Position(x=8.5, y=-65.5))
+e3 = place_new(Prototype.SteamEngine, Position(x=10.5, y=-62.5), Direction.RIGHT)
+move_to(Position(x=6.5, y=-64.5))
+for p in [(6.5,-62.5),(7.5,-62.5),(4.5,-60.5)]:          # 2 steam pipes to e3, 1 water pipe boiler1->boiler2
+    place_entity(Prototype.Pipe, position=Position(x=p[0], y=p[1]))
+fi = place_new(Prototype.Inserter, Position(x=4.5, y=-63.5), Direction.RIGHT)   # coal belt -> chest
+place_entity(Prototype.IronChest, position=Position(x=5.5, y=-63.5))
+bi = place_new(Prototype.BurnerInserter, Position(x=5.5, y=-62.5), Direction.DOWN)  # chest -> boiler2
+bi = insert_item(Prototype.Coal, bi, 5)
+place_entity(Prototype.SmallElectricPole, position=Position(x=7.5, y=-64.5))
+print(limit_chest(5.5, -63.5, 1))
+advance(20)
+power_report()
+```
+Observed: 3 engines = 2.7 MW, both boilers steady at 5 fuel.
+
+## (i) Electric drill → furnace rows feeding a plate belt  [M8, 6 furnaces ≈ 112 iron/min]
+North row: drills face DOWN into furnaces; an inserter moves plates onto the plate belt and a
+long inserter brings coal from the coal belt one tile further out.
+```python
+move_to(Position(x=-3.5, y=-71.5))
+for x in [-6.5, -3.5, -0.5]:
+    d = place_new(Prototype.ElectricMiningDrill, Position(x=x, y=-75.5), Direction.DOWN)
+    f = place_new(Prototype.StoneFurnace, d.drop_position)
+    print("drill", d.position, d.drop_position, "furn", f.position)
+move_to(Position(x=-3, y=-68.5))
+for fx in [-6, -3, 0]:                                    # furnace centres
+    o = place_new(Prototype.Inserter, Position(x=fx-0.5, y=-71.5), Direction.DOWN)          # plates -> belt y=-70.5
+    l = place_new(Prototype.LongHandedInserter, Position(x=fx+0.5, y=-71.5), Direction.UP)  # coal y=-69.5 -> furnace
+place_entity(Prototype.SmallElectricPole, position=Position(x=-4.5, y=-72.5))
+place_entity(Prototype.SmallElectricPole, position=Position(x=1.5, y=-72.5))
+```
+South row (mirror image) with drills facing UP: place each furnace explicitly at
+`(x+0.5, -67)`, **not** at `drop_position` (that overlapped the drill). The inserters swap
+roles: a regular one takes coal from y=-69.5, a long one drops plates onto y=-70.5.
+
+## (j) Science block: one row of AM1s on two belts  [M7/M9/M10]
+An iron belt (y=-70.5) and a copper belt (y=-69.5) run east under a row of AM1s at y=-73.5,
+4 tiles apart. Feed inserters at y=-71.5 reach the near belt with a regular inserter (iron)
+or the far one with a long inserter (copper). Inserters at y=-73.5 between AMs pass
+intermediates sideways, and the green assembler sits behind the row.
+```python
+ams = {}
+for name, x, rec in [("C",12.5,Prototype.CopperCable),("E",16.5,Prototype.ElectronicCircuit),("I",20.5,Prototype.Inserter),
+                     ("G",24.5,Prototype.IronGearWheel),("B",28.5,Prototype.TransportBelt),("R2",32.5,Prototype.AutomationSciencePack),
+                     ("G2",36.5,Prototype.IronGearWheel)]:
+    move_to(Position(x=x, y=-68.5))
+    a = place_new(Prototype.AssemblingMachine1, Position(x=x, y=-73.5))
+    a = set_entity_recipe(a, rec)
+    ams[name] = a.position
+for x, proto in [(12.5,Prototype.LongHandedInserter),(16.5,Prototype.Inserter),(20.5,Prototype.Inserter),(24.5,Prototype.Inserter),
+                 (28.5,Prototype.Inserter),(32.5,Prototype.LongHandedInserter),(36.5,Prototype.Inserter)]:
+    move_to(Position(x=x, y=-68.5))
+    i = place_new(proto, Position(x=x, y=-71.5), Direction.UP)        # belt -> AM
+for x, d in [(14.5,Direction.RIGHT),(18.5,Direction.RIGHT),(22.5,Direction.LEFT),(26.5,Direction.RIGHT),(34.5,Direction.LEFT)]:
+    move_to(Position(x=x, y=-68.5))
+    i = place_new(Prototype.Inserter, Position(x=x, y=-73.5), d)      # AM -> neighbour AM: C->E, E->I, G->I, G->B, G2->R2
+    place_entity(Prototype.SmallElectricPole, position=Position(x=x, y=-72.5))
+```
+Green assembler S behind the row; I and B reach it through 1-slot relay chests; S feeds a lab:
+```python
+move_to(Position(x=24.5, y=-76))
+s = place_new(Prototype.AssemblingMachine1, Position(x=24.5, y=-77.5))
+s = set_entity_recipe(s, Prototype.LogisticsSciencePack)
+for pos, d in [((21.5,-75.5),Direction.UP),((22.5,-76.5),Direction.RIGHT),((27.5,-75.5),Direction.UP),((26.5,-76.5),Direction.LEFT),((24.5,-79.5),Direction.UP)]:
+    i = place_new(Prototype.Inserter, Position(x=pos[0], y=pos[1]), d)
+for pos in [(21.5,-76.5),(27.5,-76.5)]:
+    place_entity(Prototype.IronChest, position=Position(x=pos[0], y=pos[1]))
+    print(limit_chest(pos[0], pos[1], 1))       # unbounded, they swallowed 53 belts / 38 inserters
+place_entity(Prototype.SmallElectricPole, position=Position(x=23.5, y=-75.5))
+move_to(Position(x=26.5, y=-79))
+l1 = place_new(Prototype.Lab, Position(x=24.5, y=-81.5))
+```
+More labs sit in a row at y=-81.5, 4 tiles apart, chained by inserters at (x±2, -81.5), with a
+pole at (x±2, -83.5). Result: green 4.8/min (AM1 cap 5), red 12/min from 2 red AMs, 4 labs
+researching automatically. Check with `rate([Prototype.AutomationSciencePack, Prototype.LogisticsSciencePack], 120)`
+and `lab_report()`.
+
+## (k) Belt under another belt
+```python
+belt_line(-7.5, -70.5, 8.5, -70.5, Direction.RIGHT)
+move_to(Position(x=10.5, y=-68))
+place_entity(Prototype.UndergroundBelt, direction=Direction.RIGHT, position=Position(x=9.5, y=-70.5))
+place_entity(Prototype.UndergroundBelt, direction=Direction.RIGHT, position=Position(x=11.5, y=-70.5))
+print(ug_output(11.5, -70.5, 'east'))      # -> "output d4 nb=9.5,-70.5"
+belt_line(12.5, -70.5, 37.5, -70.5, Direction.RIGHT)
+```

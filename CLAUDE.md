@@ -10,8 +10,9 @@ A headless server runs FLE's Lua tools over RCON. `setup/fle_repl.py` keeps one 
 - Subagent: `.claude/agents/factorio-player.md` (plays one shift).
 - Helpers: `agent/helpers.py`, auto-loaded into the REPL namespace. Reload with
   `python3 setup/fle_exec.py agent/helpers.py`.
-- Runs: `runs/<name>/` (`JOURNAL.md`, `renders/`, `README.md`). Saves go to `.fle/saves/`.
-  Copy the template from `runs/_template/`.
+- Runs: `runs/<name>/` (`JOURNAL.md`, `renders/`, `saves/`, `README.md`). Saves are written
+  to `.fle/saves/` (gitignored) and copied into `runs/<name>/saves/` with `--copy-to`.
+  Copy the template from `runs/_template/`. Example: `runs/run-01/`.
 
 ## Recommended start config (tested)
 - **Scenario `open_world`** (seed 44340). Every resource is within 100 tiles of spawn: iron
@@ -58,26 +59,34 @@ Resume from a save: `FLE_SAVE=<name> setup/start_server.sh`, then restart the RE
 
 ## Starting a run
 1. Bring the stack up with the recommended config (the `--fresh` REPL start).
-2. `mkdir -p runs/<name>/renders && cp runs/_template/JOURNAL.md runs/<name>/`, then fill in
-   the header.
+2. `mkdir -p runs/<name>/renders runs/<name>/saves && cp runs/_template/JOURNAL.md runs/<name>/`,
+   then fill in the header.
 3. Run the orchestrator protocol below.
 
 ## Orchestrator protocol
-You (the main session) do not play. You run shifts:
-1. Launch **one** `factorio-player` subagent at a time, never in parallel: there is one
-   character and one REPL. Its prompt names: the run dir, the shift number NN, the milestone
-   goal (strategy.md ladder M1→M9), and a budget (60–120 executions).
-2. When it returns, read the newest handoff in `runs/<name>/JOURNAL.md`. Check that the
-   render and save exist and look at the PNG. If the shift left no save, save it yourself:
-   `python3 setup/fle_exec.py --save <name>-shift-NN`.
-3. Optionally verify the claimed milestone yourself:
-   `python3 setup/fle_exec.py -c 'status_report(show_ok=False)'`.
-4. Choose the next goal. If the milestone is DONE, take the next rung. If it is PARTIAL,
+You (the main session) do not play. You run shifts, one at a time, never in parallel: there
+is one character and one REPL.
+1. **Launch a shift.** If the `factorio-player` agent type is available, use it. Custom agent
+   types in `.claude/agents/` are only loaded when a Claude Code session starts, so in the
+   session that created or edited them launch a **general-purpose** subagent instead and tell
+   it: "Your role is defined in `.claude/agents/factorio-player.md`; read it first and follow
+   it." Either way the prompt names the run dir, the shift number NN, the milestone goal
+   (strategy.md ladder M0→M11, plus the previous handoff's NEXT and any at-risk items), and a
+   budget. Run-01 used a budget of 110; shifts used 50–70 executions and each cleared 3–5
+   milestones, so give 3–5 milestones per shift.
+2. **Read the handoff** when it returns (newest block in `runs/<name>/JOURNAL.md`). Check
+   that the render exists and look at the PNG. Check that the save is in
+   `runs/<name>/saves/<name>-shift-NN.zip` (committed with the run). If not, save it yourself:
+   `python3 setup/fle_exec.py --save <name>-shift-NN --copy-to runs/<name>/saves/<name>-shift-NN.zip`.
+3. **Verify independently** with a production delta. Do not trust the claimed rates:
+   `python3 setup/fle_exec.py -c 'rate([Prototype.IronPlate, Prototype.AutomationSciencePack, Prototype.LogisticsSciencePack], 60); lab_report(); power_report()'`
+   (one execution; it lets 60 game-s pass, which is harmless).
+4. **Choose the next goal.** If the milestone is DONE, take the next rungs. If it is PARTIAL,
    repeat it with the handoff's NEXT step. If it is BLOCKED twice on the same thing, change
-   the goal or give a concrete hint from the lessons.
+   the goal or give a concrete hint from the lessons. Pass on the "Broken/at risk" items.
 5. Keep `runs/<name>/README.md` as a gallery: one render per shift, with a one-line caption.
-6. At the end, make a final save `<name>-final`, record the timeline in JOURNAL.md, and copy
-   the final save into `runs/<name>/` if the user wants it in the repo.
+6. At the end, record the timeline in JOURNAL.md and fold new traps and patterns from the
+   handoffs' "Lessons" back into the skill (api.md, SKILL.md, recipes.md) and helpers.
 
 ## Conventions
 - Never commit `.fle/`, `.venv/` or `.vendor/` (they are gitignored).

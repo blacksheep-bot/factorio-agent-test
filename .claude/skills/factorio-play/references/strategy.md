@@ -44,6 +44,7 @@ electric drill 3 circuit + 5 gear + 10 iron.
 ## Milestone ladder
 Run each check after the build; it must pass on a fresh call. `produced()` is the
 force-wide all-time production statistic, which is robust against hand-collection.
+`check_growth`/`rate` measure over real game ticks; use ≥ 60 s windows, because the stat lags.
 
 | M | Goal | Done when (code check) |
 |---|---|---|
@@ -58,6 +59,11 @@ force-wide all-time production statistic, which is robust against hand-collectio
 | M7 | **Automated red science** | red pack count grows with no manual inserts; ≥ 5/min |
 | M8 | Electric mining drills on iron/copper/coal; boiler fed automatically | the drills are `working`; boiler fuel is non-zero after `advance(300)` |
 | M9 | **Automated electronic circuits** (3 cable : 2 circuit) | circuit count grows with no manual input |
+| M10 | **Automated green science** (inserter + belt AMs → logistic AM, recipe j) | `rate([Prototype.LogisticsSciencePack], 120)` > 0 with every ingredient inserter-fed; AM1 cap is 5/min per AM |
+| M11 | **Automatic research** on red + green; red ≥ 10/min | `lab_report()` shows labs working and a queue; `rate()` red ≥ 10/min |
+
+Pace in run-01 (110-execution budget per shift): shift 1 = M0–M3b (52 executions), shift 2 =
+M4–M9 (68), shift 3 = M10–M11 plus a second boiler (63). Expect 3–5 milestones per shift.
 
 ## Opening from the vanilla-like kit (tested route to M1: about 12 programs, 45 iron/min with 3 pairs, about 130 hand-mined coal)
 1. **Scout**: `nearest()` for every resource. Store the positions as variables.
@@ -76,6 +82,22 @@ force-wide all-time production statistic, which is robust against hand-collectio
 
 Hand-mining is fine for bootstrap only. From M1 on, every program should add or fix an
 **automated** chain.
+
+## What worked in run-01 (generalises)
+- **Coal on a belt early** (recipe g): a self-refuelling burner-drill row and one trunk belt
+  past every smelter. Hand-fuelled drills became the recurring chore of every later shift.
+- **Every furnace needs an output inserter**: furnaces stop at 100 plates (`full_output`).
+- **Copper next to iron**: `nearest(Resource.CopperOre)` landed on mixed ore. Check
+  `drill.resources` or `ascii_map()` before placing copper drills.
+- **Power at the base, not at the water** (recipe h): pipes cost 1 iron each and nothing
+  else, so a 170-pipe water line beat a long pole line, and the boiler sat on the coal trunk.
+  Feed it with an electric and a burner inserter, and add boiler 2 on the water chain.
+- **Wood runs out**: small poles cost wood. Gather 20–40 wood with the first trips to the
+  trees and keep some in stock.
+- **Science block** (recipe j): parallel iron and copper belts under one row of AM1s, with
+  intermediates passed sideways by inserters. Only use relay chests limited to 1 slot.
+- **Measure the bottleneck** before adding machines: `rate()` per recipe, then `scan()` for
+  `full_output` (downstream too slow) vs `item_ingredient_shortage` (upstream too slow).
 
 ## Layout rules
 - Keep sections ≥ 10 tiles apart and assembly blocks ≥ 20 tiles apart. Pad `find_space` by 2.

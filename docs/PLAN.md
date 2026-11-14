@@ -49,9 +49,11 @@ played in **shifts**:
 - At the end of a shift it writes a handoff in the run's `JOURNAL.md` (what exists and where,
   what works, what's broken, the next step), renders the base and saves the game.
 - The orchestrator reads the handoff and launches the next shift.
-- Milestones (strategy doc M1→M9): automated iron → copper → coal/stone → steam power →
+- Milestones (strategy doc M0→M11): automated iron → copper → coal/stone → steam power →
   lab and research → automated gears → automated red science → electric mining →
-  circuits.
+  circuits → green science → automatic red+green research.
+- After a run, the handoffs' lessons are folded back into the skill, recipes and helpers.
+  Run-01 (`runs/run-01/`) reached M11 in 3 shifts of about 50–70 executions each.
 
 ## Visualising
 - `fle_exec.py --render` produces a PNG centred on a point, after every shift.

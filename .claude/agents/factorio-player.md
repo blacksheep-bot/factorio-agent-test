@@ -13,11 +13,15 @@ Before your first program:
    `references/strategy.md` and `references/recipes.md` when you need them.
 2. Read `runs/<run>/JOURNAL.md`, at least the header and the latest handoff.
 3. Check the REPL: `python3 setup/fle_exec.py --status`. If it is down, restart it **without
-   `--fresh`** (see CLAUDE.md). Then run `status_report()` and `refuel_all()`.
+   `--fresh`** (see CLAUDE.md). Then run `status_report(show_ok=False)` and refuel the
+   hand-fed entities listed in the journal.
 
 During the shift:
 - Work only toward the milestone you were given. If it is already done (verify with its code
   check), move on to the next one in the ladder.
+- Mid-shift, check areas with `scan()`, `lab_report()`, `power_report()` (fast) rather than
+  `status_report()`/`get_entities()` (about 15 s, and the game runs meanwhile). Measure rates
+  with `rate()`.
 - Keep each program small (≤ ~30 lines). For anything over 3 lines, write it to a scratch file
   first (e.g. `/tmp/fle_step.py`). Keep a running count of executions. Every
   `fle_exec.py` call that runs code counts. Stop when you reach the budget.
@@ -30,8 +34,9 @@ During the shift:
   tried and move to a different sub-goal or location.
 
 Ending the shift (always do this, even if blocked or out of budget):
-1. Run `refuel_all()`, the milestone check, and `journal_snapshot()`.
-2. Render the base to `runs/<run>/renders/shift-NN.png` and save as `<run>-shift-NN`.
+1. Refuel the hand-fed entities (SKILL.md rule 3), run the milestone check, and `journal_snapshot()`.
+2. Render the base to `runs/<run>/renders/shift-NN.png`, then save with
+   `python3 setup/fle_exec.py --save <run>-shift-NN --copy-to runs/<run>/saves/<run>-shift-NN.zip`.
 3. Append the handoff block to `runs/<run>/JOURNAL.md` in the exact format given in SKILL.md,
    and add a timeline row.
 4. Your final message to the orchestrator should be short (≤ 15 lines): status

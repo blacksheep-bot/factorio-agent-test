@@ -49,4 +49,29 @@ Notes:
   `setup/fle_repl.py` (see `CLAUDE.md` and `docs/research/fle-setup-and-api.md`).
 
 ## Playing with Claude Code
-TODO: agent section (skill, subagent, shift protocol).
+The kit: the skill `.claude/skills/factorio-play/` (play loop, API traps, strategy, proven
+code), the subagent `.claude/agents/factorio-player.md` (plays one shift), helpers in
+`agent/helpers.py`, and the orchestrator protocol in `CLAUDE.md`.
+
+**Start a run.** Bring the stack up fresh (`FLE_FRESH=1 docker compose up -d --build --wait`),
+open Claude Code in the repo, and give it a prompt like:
+> Start a new Factorio run called run-02 following CLAUDE.md. Be the orchestrator: play
+> 3 shifts with a budget of 110 executions each, one subagent at a time, aiming for
+> automated red and green science. Verify each shift yourself and keep the run README gallery.
+
+The main session plays no shifts itself. It launches one player subagent per shift (a
+general-purpose one told to read `factorio-player.md` if the agent type was created in this
+session), reads its handoff, checks production, and picks the next goal.
+
+**Outputs** go to `runs/<name>/`: `JOURNAL.md` (timeline, known positions, lessons and one
+handoff per shift), `renders/shift-NN.png`, `saves/<name>-shift-NN.zip`, and a `README.md`
+gallery. See [`runs/run-01/`](runs/run-01/) for a 3-shift example that reached automated red
+and green science, research and steam power.
+
+**View them.**
+- Renders: open the PNGs.
+- Saves in real Factorio 2.0 (2.0.73 or newer): copy the `.zip` into your Factorio saves
+  directory (`~/.factorio/saves/` on Linux, `%APPDATA%\Factorio\saves\` on Windows,
+  `~/Library/Application Support/factorio/saves/` on macOS), then Single player → Load game.
+- Or resume one on the server: copy it to `.fle/saves/`, then
+  `FLE_SAVE=run-01-shift-03 docker compose up -d --force-recreate --wait` (name without `.zip`).

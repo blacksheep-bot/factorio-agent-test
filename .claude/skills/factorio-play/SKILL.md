@@ -22,7 +22,9 @@ References (read them when needed, not all up front):
 - `references/api.md`: tested tool signatures and traps. **Read it before your first program.**
 - `references/strategy.md`: ratios, research gates, milestone ladder with code checks.
 - `references/recipes.md`: known-good snippets: drill→furnace, coal pair, refuel, steam power,
-  gear assembler, lab.
+  gear assembler, lab; and run-01's proven patterns: self-refuelling coal belt (g), boiler at
+  the base with redundant feed (h), electric drill→furnace rows (i), science block (j),
+  underground belt (k).
 - `agent/helpers.py`: preloaded helpers (`status_report`, `refuel_all`, `find_space`, `gather`,
   `collect`, `place_new`, `place_drill_furnace`, `advance`, `rate`, `check_growth`, `scan`,
   `lab_report`, `power_report`, `ascii_map`, `belt_line`, `ug_output`, `limit_chest`,
@@ -61,8 +63,8 @@ References (read them when needed, not all up front):
 2. **Never trust a returned object after waiting or after a placement next to a same-type
    entity.** Re-fetch it.
 3. **Fuel is the clock.** Give 20 coal to every burner thing. Run `refuel_all()` at the start
-   of every shift and before every long `advance`. Automate coal by M3 (belt-fed, recipes
-   g/h). After that, keep a list of the hand-fed entities in the journal and refuel only
+   of every shift and before every long `advance`. Automate coal by M3 (belt-fed,
+   recipe g). After that, keep a list of the hand-fed entities in the journal and refuel only
    those (`refuel_all(positions=[...])`); a plain `refuel_all()` wastes coal on self-fed ones.
 4. **Automate, don't shuttle.** Hand-mining is only for the bootstrap. Every program after M1
    should add, extend or fix an automated chain. Hand-filled chests do not count for
@@ -90,7 +92,7 @@ References (read them when needed, not all up front):
 | Symptom | Fix |
 |---|---|
 | `Could not place X at ...` | `find_space(w, h, near)` / `nearest_buildable` with padding. Check reach (`move_to` first). Water tiles block boilers and engines. |
-| Drill/furnace `no_fuel` | `refuel_all()`. Then automate coal. |
+| Drill/furnace `no_fuel` | `refuel_all()`. Then automate coal (recipe g). |
 | Drill `waiting_for_space_in_destination` | Nothing takes the output. Put a furnace or chest on `drill.drop_position`, or pull from it. |
 | Furnace `no_ingredients` with a drill next to it | The drill is not dropping into it. Compare `drill.drop_position` with the furnace footprint, and check the drill's fuel. |
 | Assembler `item_ingredient_shortage` / `no_power` | Check the input inserter's direction (`pickup_position`/`drop_position`), the chest contents, and pole coverage (5×5 per small pole). |
@@ -109,19 +111,18 @@ References (read them when needed, not all up front):
 | Engines stop, consumers NO_POWER after adding a pipe or engine | The water line touched an engine and flooded the steam side. Remove it, clear with Lua `e.fluidbox[1]=nil`. See api.md "Fluids". |
 | Boiler fuel falls toward 0 | A lone burner inserter starved. Add an electric inserter from the coal belt next to it. |
 | Downstream AM `item_ingredient_shortage` while an upstream chest fills | Unbounded relay chest. `limit_chest(x, y, 1)`. |
-| Entities built far from where you meant (x≈700) | A multi-assignment gave wrong values. Assign one per line, print, then place. |
 | `set_research` has no enum for a tech | `lua("game.forces.player.add_research('name')")`. |
 | Placement blocked by a dead tree trunk or rock | `move_to` next to it, `harvest_resource` at its exact position. |
 | A call took 15 s and fuel dropped | `get_entities()`/`status_report()` ran the game while slow. Use `scan()` mid-shift. |
 
 ## Shift protocol (when run by the orchestrator)
 You get: the run directory `runs/<run>/`, a milestone goal, and a budget of N executions.
-1. Read `runs/<run>/JOURNAL.md`, especially the latest handoff. Run `status_report()` and
-   `refuel_all()`. Re-create the namespace variables you need from the handoff positions
+1. Read `runs/<run>/JOURNAL.md`, especially the latest handoff. Run `status_report(show_ok=False)`
+   and refuel (rule 3). Re-create the namespace variables you need from the handoff positions
    (`get_entity(...)`). Variables from earlier shifts may be gone.
 2. Play the loop toward the milestone. Count your executions and stop at the budget even if
    the milestone is unfinished. Leave the factory in a fuelled, non-broken state.
-3. Before ending: `refuel_all()`, run the milestone's code check, `journal_snapshot()`, then
+3. Before ending: refuel (rule 3), run the milestone's code check, `journal_snapshot()`, then
    render and save:
    ```bash
    python3 setup/fle_exec.py --render runs/<run>/renders/shift-NN.png --x <base cx> --y <base cy> --radius 30
