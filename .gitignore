@@ -1,0 +1,5 @@
+.vendor/
+.venv/
+.env
+.fle/
+__pycache__/

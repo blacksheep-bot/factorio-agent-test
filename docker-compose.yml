@@ -1,0 +1,65 @@
+# Factorio 2.0.73 headless server + FLE REPL client.   Quick start: see README.md
+#   docker compose up -d --build        then:  python3 setup/fle_exec.py -c 'print(inspect_inventory())'
+#
+# Env (shell or .env file next to this file):
+#   FLE_SCENARIO     open_world (default) | default_lab_scenario       (ignored when FLE_SAVE is set)
+#   FLE_SAVE         load $FLE_DATA_DIR/saves/<name>.zip instead of a fresh scenario
+#   FLE_INVENTORY    starting inventory JSON (FLE sets it on every REPL connect)
+#   FLE_FRESH=1      wipe player-built entities when the REPL connects
+#   FLE_ALL_TECH=1   research everything on connect
+#   FLE_PAUSE_BETWEEN=0  continuous clock (default 1 = turn-based: paused between programs)
+#   FLE_NO_RESTORE=1 don't carry research/inventory/position over a REPL reconnect
+#   FLE_DATA_DIR     host dir for saves/renders (default ./.fle)
+#   FLE_REPL_PORT / FLE_RCON_HOST_PORT / FLE_GAME_PORT   host ports (8765 / 27000 / 34197)
+name: ${COMPOSE_PROJECT_NAME:-fle}
+
+x-build: &build
+  context: .
+  dockerfile: docker/Dockerfile
+  secrets: [extra_ca]
+
+services:
+  factorio:
+    build: { <<: *build, target: factorio }
+    image: fle-factorio:2.0.73
+    user: "0"            # entrypoint fixes saves-dir perms, then drops to uid 845 (factorio)
+    restart: unless-stopped
+    environment:
+      FLE_SCENARIO: ${FLE_SCENARIO:-open_world}
+      FLE_SAVE: ${FLE_SAVE:-}
+    ports:
+      - "127.0.0.1:${FLE_RCON_HOST_PORT:-27000}:27015/tcp"   # RCON (password "factorio")
+      - "${FLE_GAME_PORT:-34197}:34197/udp"                  # join from the game client
+    volumes:
+      - ${FLE_DATA_DIR:-./.fle}/saves:/factorio/saves
+    cpus: 1
+    mem_limit: 1024m
+
+  fle:
+    build: { <<: *build, target: client }
+    image: fle-client:0.4.3
+    depends_on:
+      factorio: { condition: service_healthy }
+    restart: unless-stopped
+    environment:
+      FLE_SERVER_HOST: factorio
+      FLE_RCON_PORT: "27015"
+      FLE_INVENTORY: ${FLE_INVENTORY:-{"iron-plate":8,"wood":1,"burner-mining-drill":1,"stone-furnace":1}}
+      FLE_FRESH: ${FLE_FRESH:-0}
+      FLE_ALL_TECH: ${FLE_ALL_TECH:-0}
+      FLE_PAUSE_BETWEEN: ${FLE_PAUSE_BETWEEN:-1}
+      FLE_NO_RESTORE: ${FLE_NO_RESTORE:-0}
+      FLE_HELPERS: /workspace/agent/helpers.py        # live from the repo (skipped if absent)
+      # absolute host paths from fle_exec.py (e.g. --render runs/x/a.png) -> /workspace/...
+      FLE_HOST_ROOT: ${FLE_HOST_ROOT:-${PWD:-}}
+      FLE_DATA_HOST_HINT: ${FLE_DATA_DIR:-./.fle}   # for messages only
+    ports:
+      - "127.0.0.1:${FLE_REPL_PORT:-8765}:8765"
+    volumes:
+      - .:/workspace                                  # renders land in the repo
+      - ${FLE_DATA_DIR:-./.fle}/saves:/data/saves     # same dir the server saves into
+      - ${FLE_DATA_DIR:-./.fle}/renders:/data/renders # fallback for paths outside the repo
+
+secrets:
+  extra_ca:
+    file: ${FLE_EXTRA_CA:-./docker/no-extra-ca.pem}

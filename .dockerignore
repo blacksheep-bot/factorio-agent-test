@@ -1,0 +1,5 @@
+# Build context is the repo root; only docker/ and setup/ are needed.
+*
+!docker/
+!setup/
+setup/__pycache__
